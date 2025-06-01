@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 # Copyright (c) 2025 Kenji Brameld
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,6 +19,7 @@ import importlib.util
 import os
 import subprocess
 import sys
+import tempfile
 
 from launch import LaunchContext, LaunchDescription
 from launch.actions import IncludeLaunchDescription
@@ -25,7 +27,6 @@ from launch_ros.actions import Node
 
 
 def resolve_substitutions(subst, context):
-    """Resolve substitutions or lists of substitutions in launch files."""
     try:
         if isinstance(subst, list):
             return ''.join(
@@ -40,7 +41,6 @@ def resolve_substitutions(subst, context):
 
 
 def load_launch_description_from_file(path):
-    """Load the LaunchDescription from a given launch file path."""
     spec = importlib.util.spec_from_file_location('launch_module', path)
     launch_module = importlib.util.module_from_spec(spec)
     sys.modules['launch_module'] = launch_module
@@ -53,7 +53,6 @@ def load_launch_description_from_file(path):
 
 
 def print_launch_tree(ld, indent=0, context=None):
-    """Print a tree view of the launch file structure to the console."""
     if context is None:
         context = LaunchContext()
 
@@ -102,7 +101,6 @@ def print_launch_tree(ld, indent=0, context=None):
 
 
 def collect_edges(ld, parent, context=None, edges=None, node_shapes=None):
-    """Collect edges between launch files and nodes for graph generation."""
     if context is None:
         context = LaunchContext()
     if edges is None:
@@ -151,28 +149,17 @@ def collect_edges(ld, parent, context=None, edges=None, node_shapes=None):
     return edges, node_shapes
 
 
-def write_dot(edges, node_shapes, dot_path='launch_tree.dot'):
-    """Generate a DOT file representing the launch graph."""
-    with open(dot_path, 'w') as f:
-        f.write('digraph LaunchTree {\n')
-        f.write('  node [fontname=\"Arial\"];\n')
-        f.write('  rankdir=TB;\n')
-        for node, shape in node_shapes.items():
-            f.write(f'  "{node}" [shape={shape}];\n')
-        for parent, child in sorted(edges):
-            f.write(f'  "{parent}" -> "{child}";\n')
-        f.write('}\n')
-    print(f'\nDOT graph written to: {dot_path}')
-    return dot_path
-
-
-def generate_pdf(dot_path, pdf_path='launch_tree.pdf'):
-    """Run Graphviz to generate a PDF from the DOT file."""
-    try:
-        subprocess.run(['dot', '-Tpdf', dot_path, '-o', pdf_path], check=True)
-        print(f'PDF generated at: {pdf_path}')
-    except Exception as e:
-        print(f'Failed to generate PDF: {e}')
+def generate_dot_content(edges, node_shapes):
+    lines = []
+    lines.append('digraph LaunchTree {')
+    lines.append('  node [fontname="Arial"];')
+    lines.append('  rankdir=TB;')
+    for node, shape in node_shapes.items():
+        lines.append(f'  "{node}" [shape={shape}];')
+    for parent, child in sorted(edges):
+        lines.append(f'  "{parent}" -> "{child}";')
+    lines.append('}')
+    return '\n'.join(lines)
 
 
 def main():
@@ -183,17 +170,20 @@ def main():
         'launch_file', help='Path to the ROS 2 launch file (.py) to inspect'
     )
     parser.add_argument(
-        '--dot',
-        default='launch_tree.dot',
-        help='Path to output DOT file (default: launch_tree.dot)',
+        '--out',
+        help='Output file name (defaults to launch_tree.<format>)',
     )
     parser.add_argument(
-        '--pdf',
-        default='launch_tree.pdf',
-        help='Path to output PDF file (default: launch_tree.pdf)',
+        '--format',
+        choices=['png', 'pdf', 'dot'],
+        default='png',
+        help='Output format (default: png)',
     )
 
     args = parser.parse_args()
+
+    if not args.out:
+        args.out = f'launch_tree.{args.format}'
 
     if not os.path.exists(args.launch_file):
         print(f'Error: file does not exist: {args.launch_file}')
@@ -207,8 +197,25 @@ def main():
         print_launch_tree(ld)
 
         edges, node_shapes = collect_edges(ld, parent=root)
-        dot_path = write_dot(edges, node_shapes, dot_path=args.dot)
-        generate_pdf(dot_path, pdf_path=args.pdf)
+        dot_content = generate_dot_content(edges, node_shapes)
+
+        if args.format == 'dot':
+            with open(args.out, 'w') as f:
+                f.write(dot_content)
+            print(f'DOT graph written to: {args.out}')
+        else:
+            with tempfile.NamedTemporaryFile('w', suffix='.dot', delete=False) as f:
+                f.write(dot_content)
+                tmp_dot_path = f.name
+
+            try:
+                subprocess.run(['dot', f'-T{args.format}', tmp_dot_path, '-o', args.out],
+                               check=True)
+                print(f'{args.format.upper()} generated at: {args.out}')
+            except Exception as e:
+                print(f'Failed to generate {args.format.upper()}: {e}')
+            finally:
+                os.remove(tmp_dot_path)
 
     except Exception as e:
         print(f'Error loading launch file: {e}')
