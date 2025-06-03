@@ -22,7 +22,7 @@ import sys
 import tempfile
 
 from launch import LaunchContext, LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import IncludeLaunchDescription, GroupAction
 from launch_ros.actions import Node
 
 
@@ -51,53 +51,60 @@ def load_launch_description_from_file(path):
 
     return launch_module.generate_launch_description()
 
-
-def print_launch_tree(ld, indent=0, context=None):
+def print_launch_tree(ld: LaunchDescription, indent=0, context=None):
     if context is None:
         context = LaunchContext()
-
     for action in ld.entities:
-        if isinstance(action, IncludeLaunchDescription):
-            filename = '<unknown>'
-            try:
-                source = action.launch_description_source
-                if hasattr(source, 'launch_file_path'):
-                    path_str = source.launch_file_path
-                elif hasattr(source, 'launch_file_path_substitutions'):
-                    path_str = resolve_substitutions(
-                        source.launch_file_path_substitutions, context
-                    )
-                elif hasattr(source, 'location'):
-                    path_str = str(source.location)
-                elif hasattr(source, 'perform'):
-                    path_str = source.perform(context)
-                else:
-                    path_str = str(source)
-                filename = os.path.basename(path_str)
-            except Exception as e:
-                filename = f'<error: {e}>'
+        print_action_tree(action, indent, context)
 
-            print('  ' * indent + f'Include: {filename}')
 
-            try:
-                nested_ld = source.get_launch_description(context)
-                if isinstance(nested_ld, LaunchDescription):
-                    print_launch_tree(nested_ld, indent + 1, context)
-                else:
-                    print(
-                        '  ' * (indent + 1)
-                        + f'(Unexpected return type: {type(nested_ld).__name__})'
-                    )
-            except Exception as e:
-                print('  ' * (indent + 1) + f'(Could not load: {e})')
+def print_action_tree(action, indent, context):
+    prefix = '  ' * indent
 
-        elif isinstance(action, Node):
-            try:
-                raw_exe = getattr(action, 'node_executable', '<missing>')
-                exe = resolve_substitutions(raw_exe, context)
-                print('  ' * indent + f'Node: {exe}')
-            except Exception as e:
-                print('  ' * indent + f'Node: <missing> (error: {e})')
+    if isinstance(action, IncludeLaunchDescription):
+        filename = '<unknown>'
+        try:
+            source = action.launch_description_source
+            if hasattr(source, 'launch_file_path'):
+                path_str = source.launch_file_path
+            elif hasattr(source, 'launch_file_path_substitutions'):
+                path_str = resolve_substitutions(source.launch_file_path_substitutions, context)
+            elif hasattr(source, 'location'):
+                path_str = str(source.location)
+            elif hasattr(source, 'perform'):
+                path_str = source.perform(context)
+            else:
+                path_str = str(source)
+            filename = os.path.basename(path_str)
+        except Exception as e:
+            filename = f'<error: {e}>'
+
+        print(prefix + f'Include: {filename}')
+
+        try:
+            nested_ld = source.get_launch_description(context)
+            if isinstance(nested_ld, LaunchDescription):
+                print_launch_tree(nested_ld, indent + 1, context)
+            else:
+                print(prefix + f'(Unexpected return type: {type(nested_ld).__name__})')
+        except Exception as e:
+            print(prefix + f'(Could not load: {e})')
+
+    elif isinstance(action, Node):
+        try:
+            raw_exe = getattr(action, 'node_executable', '<missing>')
+            exe = resolve_substitutions(raw_exe, context)
+            print(prefix + f'Node: {exe}')
+        except Exception as e:
+            print(prefix + f'Node: <missing> (error: {e})')
+
+    elif isinstance(action, GroupAction):
+        print(prefix + 'Group:')
+        try:
+            for sub_action in action.get_sub_entities():
+                print_action_tree(sub_action, indent + 1, context)
+        except Exception as e:
+            print(prefix + f'(Could not evaluate group: {e})')
 
 
 def collect_edges(ld, parent, context=None, edges=None, node_shapes=None):
@@ -111,42 +118,51 @@ def collect_edges(ld, parent, context=None, edges=None, node_shapes=None):
     node_shapes[parent] = 'box'
 
     for action in ld.entities:
-        if isinstance(action, IncludeLaunchDescription):
-            try:
-                source = action.launch_description_source
-                if hasattr(source, 'launch_file_path'):
-                    path_str = source.launch_file_path
-                elif hasattr(source, 'launch_file_path_substitutions'):
-                    path_str = resolve_substitutions(
-                        source.launch_file_path_substitutions, context
-                    )
-                elif hasattr(source, 'location'):
-                    path_str = str(source.location)
-                elif hasattr(source, 'perform'):
-                    path_str = source.perform(context)
-                else:
-                    path_str = str(source)
-
-                filename = os.path.basename(path_str)
-                edges.add((parent, filename))
-                node_shapes[filename] = 'box'
-
-                nested_ld = source.get_launch_description(context)
-                if isinstance(nested_ld, LaunchDescription):
-                    collect_edges(nested_ld, filename, context, edges, node_shapes)
-            except Exception:
-                continue
-
-        elif isinstance(action, Node):
-            try:
-                raw_exe = getattr(action, 'node_executable', '<missing>')
-                exe = resolve_substitutions(raw_exe, context)
-                edges.add((parent, exe))
-                node_shapes[exe] = 'ellipse'
-            except Exception:
-                continue
+        collect_action_edges(action, parent, context, edges, node_shapes)
 
     return edges, node_shapes
+
+
+def collect_action_edges(action, parent, context, edges, node_shapes):
+    if isinstance(action, IncludeLaunchDescription):
+        try:
+            source = action.launch_description_source
+            if hasattr(source, 'launch_file_path'):
+                path_str = source.launch_file_path
+            elif hasattr(source, 'launch_file_path_substitutions'):
+                path_str = resolve_substitutions(source.launch_file_path_substitutions, context)
+            elif hasattr(source, 'location'):
+                path_str = str(source.location)
+            elif hasattr(source, 'perform'):
+                path_str = source.perform(context)
+            else:
+                path_str = str(source)
+
+            filename = os.path.basename(path_str)
+            edges.add((parent, filename))
+            node_shapes[filename] = 'box'
+
+            nested_ld = source.get_launch_description(context)
+            if isinstance(nested_ld, LaunchDescription):
+                collect_edges(nested_ld, filename, context, edges, node_shapes)
+        except Exception:
+            pass
+
+    elif isinstance(action, Node):
+        try:
+            raw_exe = getattr(action, 'node_executable', '<missing>')
+            exe = resolve_substitutions(raw_exe, context)
+            edges.add((parent, exe))
+            node_shapes[exe] = 'ellipse'
+        except Exception:
+            pass
+
+    elif isinstance(action, GroupAction):
+        try:
+            for sub_action in action.get_sub_entities():
+                collect_action_edges(sub_action, parent, context, edges, node_shapes)
+        except Exception:
+            pass
 
 
 def generate_dot_content(edges, node_shapes):
